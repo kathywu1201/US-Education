@@ -1,0 +1,948 @@
+---
+title: "Research on Education and Census Data"
+author: "Kathy Wu and Chelsea Lu"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r setup, echo=FALSE}
+library(knitr)
+# set global chunk options: images will be 7x5 inches
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+options(digits = 4)
+
+
+## indents are for indenting r code as formatted text
+## They may need to be adjusted depending on your OS
+# if your output looks odd, increase or decrease indent
+indent1 = '    '
+indent2 = '        '
+indent3 = '            '
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(dplyr)
+library(ROCR)
+library(ggridges)
+library(dendextend)
+library(ggplot2)
+library(tree)
+library(maptree)
+library(randomForest)
+library(gbm)
+library(glmnet)
+library(ISLR)
+library(maps)
+library(viridis)
+library(readr)
+library(FNN)
+library(reshape2)
+library(ggplot2)
+library(class)
+library(cowplot)
+library(boot)
+```
+
+<font size="6"> __Introduction to the Datasets__ </font> 
+\bigskip
+
+<font size="5"> __Census Data__ </font>
+\bigskip
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+state.name <- c(state.name, "District of Columbia")
+state.abb <- c(state.abb, "DC")
+## read in census data
+census <- read_csv("./acs2017_county_data.csv") %>% 
+  select(-CountyId, -ChildPoverty, -Income, -IncomeErr, -IncomePerCap, -IncomePerCapErr) %>%
+  mutate(State = state.abb[match(`State`, state.name)]) %>%
+  filter(State != "PR")
+head(census)
+```
+
+<font size="5"> __Education Data__ </font>
+\bigskip
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+## read in education data
+education <- read_csv("./education.csv") %>%
+  filter(!is.na(`2003 Rural-urban Continuum Code`)) %>%
+  filter(State != "PR") %>%
+  select(-`FIPS Code`,
+         -`2003 Rural-urban Continuum Code`,
+         -`2003 Urban Influence Code`,
+         -`2013 Rural-urban Continuum Code`,
+         -`2013 Urban Influence Code`) %>%
+  rename(County = `Area name`)
+head(education)
+```
+
+<font size="6"> __Preliminary data analysis__ </font>
+\bigskip
+
+<font size="5"> __1. Census Data__ </font>
+```{r echo=FALSE}
+dim(census)
+```
+The dimension of census data is 3142 x 31.
+
+```{r echo=FALSE}
+sum(is.na(census))
+```
+There is no missing value in the data set.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+length(unique(census$State))
+```
+The total number of distinct values in State in Census is 51 which contains all states and a federal district.
+\bigskip
+
+<font size="5"> __2. Education Data__ </font>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+dim(education)
+```
+The dimension of education data is 3143 x 42.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+by_county = education %>%
+  group_by(County)
+sum(!complete.cases(by_county))
+```
+There are 18 distinct counties contain missing values in the data set
+
+```{r echo=FALSE}
+length(unique(education$County))
+```
+The total number of distinct county in education data is 1877.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+length(unique(census$County))
+```
+The total number of distinct county in census data is 1877, which is the same as that of the education data.
+\bigskip
+
+<font size="6"> __Data Wrangling__ </font>
+\bigskip
+
+<font size="4"> __3. we remove all the NA values in education data.__ </font>
+```{r}
+education = na.omit(education)
+```
+
+<font size="4"> __4. We then want to mutate the data set into the 6 features we want.__ </font>
+```{r}
+new.education = select(education, c("State",
+                      "County",
+                      "Less than a high school diploma, 2015-19",
+                      "High school diploma only, 2015-19",
+                      "Some college or associate's degree, 2015-19",
+                      "Bachelor's degree or higher, 2015-19"))
+new.education = mutate(new.education, 
+                       "Total Population of County" = rowSums(new.education[,3:6]))
+```
+
+<font size="4"> __5. We construct aggregated data sets from education data.__ </font>
+```{r}
+education.state = new.education %>%
+  group_by(State)
+```
+
+<font size="4"> __6. We create a data set on the basis of education.state, where we create a new feature which is the name of the education degree level with the largest population in that state.__ </font>
+```{r message=FALSE, warning=FALSE}
+state.level = education.state %>%
+  summarise(across(2:5, sum)) %>%
+  rowwise() %>%
+  mutate(edu.level = names(.)[which.max(c_across(2:5))])
+```
+
+\bigskip
+
+<font size="6"> __Visualization__ </font>
+\bigskip
+
+<font size="4"> __7. Now we color the map (on the state level) by the education level with highest population for each state.__ </font>
+```{r echo=FALSE}
+states <- map_data("state")
+```
+
+```{r echo=FALSE}
+# Merge the data
+states = states %>%
+  mutate(State = state.abb[match(states$region, tolower(state.name))])
+new.states = left_join(states, state.level, by = "State")
+```
+
+```{r echo=FALSE}
+# Plot the legend
+ggplot(data = new.states) + 
+  geom_polygon(aes(x = long, y = lat, fill = edu.level, group = group),
+               color = "white") + 
+  coord_fixed(1.3) +
+  guides(fill="none")
+```
+
+<font size="4"> __8. We plot the graph for the census data using the total population.__ </font>
+```{r echo=FALSE}
+# Mutate the data
+states <- map_data("state")
+states = states %>%
+  mutate(State = state.abb[match(states$region, tolower(state.name))])
+
+# Merge the data sets
+new.census = left_join(states, census, by = "State")
+
+p1 = ggplot(data = new.census) + 
+  geom_polygon(aes(x = long, y = lat, fill = TotalPop, group = group), color = "white") + 
+  theme_void() +
+   scale_fill_viridis(trans = "log", 
+                      name="Population Number", 
+                      guide = guide_legend( keyheight = unit(3, units = "mm"), 
+                                            keywidth=unit(12, units = "mm"), 
+                                            label.position = "bottom", 
+                                            title.position = 'top', nrow=1) ) +
+  theme(plot.title = 
+          element_text(size= 22, hjust=0.01, 
+                       color = "#4e4d47")) +
+  labs(title = "United States Population") +
+  coord_map()
+```
+
+```{r echo=FALSE}
+plot_grid(p1)
+```
+
+<font size="4"> __9. We clean and aggregate the information in the census data which contains county-level census information.__ </font>
+```{r}
+# filter out any rows with missing values
+census.clean = na.omit(census)
+
+# convert {Men, Employed, VotingAgeCitizen} attributes to percentages
+census.clean = census.clean %>%
+  mutate(Men = 100*census.clean$Men/census.clean$TotalPop) %>%
+  mutate(Employed = 100*census.clean$Employed/census.clean$TotalPop) %>%
+  mutate(VotingAgeCitizen = 100*census.clean$VotingAgeCitizen/census.clean$TotalPop)
+
+# compute Minority attribute by combining {Hispanic, Black, Native, Asian, Pacific} 
+census.clean = census.clean %>%
+  mutate(minority = rowSums(census[,c(6,8,9,10,11)]))
+
+# remove these variables after creating Minority
+census.clean = select(census.clean, -c(Hispanic, Black, Native, Asian, Pacific))
+
+# remove {Walk, PublicWork, Construction, Unemployment}
+census.clean = select(census.clean, -c(Walk, PublicWork, Construction, Unemployment))
+```
+
+<font size="4"> __10. Print out the cleaned census data.__ </font>
+```{r echo=FALSE}
+# Print the first 5 rows
+head(census.clean)
+```
+\bigskip
+
+<font size="6"> __Dimensionality reduction__ </font>
+\bigskip
+
+<font size="4"> __11. Run PCA for the cleaned county level census data (with State and County excluded).__ </font>
+```{r}
+pca.census = prcomp(census.clean[,colnames(census.clean)!="State" &
+                                   colnames(census.clean)!="County"&
+                                   colnames(census.clean)!="Women"&
+                                   colnames(census.clean)!="minority"&
+                                   colnames(census.clean)!="TotalPop"], 
+                    scale=TRUE)
+pc.county = pca.census$x[,c(1,2)]
+```
+Here, we choose to center and scale the features before running PCA is because we want to scale the variables to have standard deviation one, and scaling makes the results less complicated.\
+We delete the "Women" and "TotalPop" column because it is colineared with "Men", "minority" is colineared with "White".\
+
+The three features with the largest absolute values of the first principal component are "WorkAtHome", "SelfEmployed", and "minority".
+```{r echo=FALSE}
+head(sort(abs(pca.census$rotation[,1]), decreasing=TRUE))
+```
+
+```{r echo=FALSE}
+head(sort(pca.census$rotation[,1]), n=10)
+```
+The features that have opposite signs are "Drive", "Production", "Privatework", "Poverty", "MeanCommute", "Office", "Service", and "Carpool".\
+This means that there is a negative correlation of the variables in the first PC. For example, with an increasing of one of the negative-sign features, there is a decrease in the response.\
+
+<font size="4"> __12. Determine the number of minimum number of PCs needed to capture 90% of the variance for the analysis.__ </font>\
+```{r echo=FALSE}
+pr.var=pca.census$sdev^2
+pve=pr.var/sum(pr.var)
+```
+
+__Plot of proportion of variance explained by each component:__\
+```{r echo=FALSE}
+plot(pve, xlab="Principal Component",
+ylab="Proportion of Variance Explained ", ylim=c(0,1),type='b')
+```
+
+__Plot of proportion of variance explained by cumulative PVE:__\
+```{r echo=FALSE}
+plot(cumsum(pve), xlab="Principal Component ",
+ylab=" Cumulative Proportion of Variance Explained ", ylim=c(0,1), type='b')
+```
+
+We need 11 PCs in order to explain 90% of the total variation in the data.
+```{r include=FALSE}
+sum((cumsum(pve) <= 0.90))+1
+```
+\bigskip
+
+<font size="6"> __Clustering__ </font>
+\bigskip
+
+<font size="4"> __13. With census.clean (with State and County excluded), perform hierarchical clustering with complete linkage.__ </font>\
+__Hierarchical Clustering for 10 clusters:__\
+```{r echo=FALSE}
+set.seed(123)
+census.dist = dist(census.clean[,colnames(census.clean)!="State" &
+                                   colnames(census.clean)!="County"])
+census.hclust = hclust(census.dist, method = "complete")
+
+clust1 = cutree(census.hclust, 10)
+table(clust1)
+
+clust1[which(census.clean$County == "Santa Barbara County")]
+```
+For hierarchical clustering with 10 cluster, we observe that "Santa Barbara County" is in cluster 2.\
+
+__First 2 Principal Componets__\
+Then we use the first 2 principal components from pc.county as inputs instead of the original features to run hierarchical clustering algorithm again.\
+```{r echo=FALSE}
+set.seed(123)
+census.pc.dist = dist(pc.county)
+census.pc.hclust = hclust(census.pc.dist, method = "complete")
+
+clust2 = cutree(census.pc.hclust, 10)
+table(clust2)
+
+clust2[which(census.clean$County == "Santa Barbara County")]
+```
+For clustering the first 2 principal components with 10 cluster, we observe that "Santa Barbara County" is in cluster 5.\
+
+Apparently, using the first 2 principal components include more information related to "Santa Barbara County". As a result, the second method seems to put "Santa Barbara County" in a more appropriate cluster.
+\bigskip
+
+<font size="6"> __Modeling__ </font>
+\bigskip
+
+Question we want to answer: _Can we use census information as well as the education information in a county to predict the level of poverty in that county?_\
+```{r}
+# we join the two data sets
+all = census.clean %>%
+  left_join(education, by = c("State"="State", "County"="County")) %>% 
+  na.omit
+```
+
+<font size="4"> __14. Transform the variable Poverty into a binary categorical variable with two levels: 1 if Poverty is greater than 20, and 0 if Poverty is smaller than or equal to 20. Remove features that you think are uninformative in classification tasks.__ </font>
+```{r}
+all = all %>%
+  mutate(Poverty = factor(as.integer(Poverty > 20), level=c(0,1)))
+all = all %>%
+  select(c("Men","Poverty","Professional","Employed","PrivateWork","SelfEmployed","FamilyWork","minority","Percent of adults with less than a high school diploma, 2015-19","Percent of adults with a high school diploma only, 2015-19","Percent of adults completing some college or associate's degree, 2015-19","Percent of adults with a bachelor's degree or higher, 2015-19"))
+colnames(all) = make.names(colnames(all))
+```
+
+We then partition the dataset into $80%$ training and $20%$ test data.
+```{r echo=FALSE}
+set.seed(123) 
+n = nrow(all)
+idx.tr = sample.int(n, 0.8*n) 
+all.tr = all[idx.tr, ]
+all.te = all[-idx.tr, ]
+```
+
+The following code to define 10 cross-validation folds:
+```{r}
+set.seed(123) 
+nfold <- 10
+folds <- sample(cut(1:nrow(all.tr), breaks=nfold, labels=FALSE))
+```
+
+The following is the error rate function. And the object records is used to record the classification performance of each method in the subsequent problems.\
+```{r}
+calc_error_rate = function(predicted.value, true.value){
+  return(mean(true.value!=predicted.value))
+}
+records = matrix(NA, nrow=3, ncol=2)
+colnames(records) = c("train.error","test.error")
+rownames(records) = c("tree","logistic","lasso")
+```
+\bigskip
+
+<font size="6"> __Classification__ </font>
+\bigskip
+
+<font size="4"> __15. Decision Tree__ </font>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(123)
+tree.all = tree(Poverty ~., data = all.tr)
+cvtree.all = cv.tree(tree.all, FUN = prune.misclass, K=folds)
+best.cv = min(cvtree.all$size[cvtree.all$dev == min(cvtree.all$dev)])
+pt.cvtree.all = prune.misclass(tree.all, best = best.cv)
+```
+
+__Tree before pruning:__
+```{r echo=FALSE}
+draw.tree(tree.all, nodeinfo = TRUE, cex = 0.5)
+title("Unpruned Tree for Predicting Poverty")
+```
+
+__Tree After Pruning:__
+```{r echo=FALSE}
+draw.tree(pt.cvtree.all, nodeinfo = TRUE, cex = 0.5)
+title("Pruned Tree of Size 5 for Predicting Poverty")
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+records["tree","train.error"] = 
+  calc_error_rate(predict(pt.cvtree.all, all.tr, type="class"), all.tr$Poverty)
+```
+The _Training Error Rate_ is `r records["tree","train.error"]`.\
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+records["tree","test.error"] =
+  calc_error_rate(predict(pt.cvtree.all, all.te, type="class"), all.te$Poverty)
+```
+The _test Error Rate_ is `r records["tree","test.error"]`.\
+
+Both Unpruned and Pruned Tree were first splitted by the "Employed" feature which implies that it could be the most influential variable in predicting Poverty. \
+Overall, the Pruned Tree tells us that unemployed minorities with lower education level may result in Poverty. 
+\bigskip
+
+<font size="4"> __16. Logistic Regression__ </font>\
+We first fit a logistic regression model.
+```{r echo=FALSE}
+# Fit a logistic regression model
+logit.all = glm(Poverty~., data=all.tr, family="binomial")
+summary(logit.all)
+```
+The significant variables are "Men", "Employed", "PrivateWork", "SelfEmployed", "minority".\
+"Employed" and "minority" seem to have consistency comparing to the influential variables in the Pruned Tree.\
+Increasing "Employed" by 1-unit implies multiply the odds by $e^{coefficient-estimate-of-Employed}$.\
+Increasing "minority" by 1-unit implies multiply the odds by $e^{coefficient-estimate-of-minority}$.\
+
+```{r echo=FALSE}
+# Calculate the error rates
+temp1 = predict(logit.all, all.tr, type = "response")
+temp2 = predict(logit.all, all.te, type = "response")
+records["logistic","train.error"] = 
+  calc_error_rate(as.factor(ifelse(temp1<=0.5, "0", "1")), all.tr$Poverty)
+records["logistic","test.error"] = 
+  calc_error_rate(as.factor(ifelse(temp2<=0.5, "0", "1")), all.te$Poverty)
+```
+After calculating the error rates, the Records Matrix is:\
+```{r echo=FALSE}
+records
+```
+
+
+<font size="4"> __17. Now Consider a Lasso Regression Model__ </font>\
+We first fit the model to select the best tuning parameter $\lambda$, and
+```{r echo=FALSE}
+set.seed(123)
+all.tr.x = select(all.tr, -Poverty)
+all.tr.y = as.numeric(all.tr$Poverty)
+cv.out.lasso = cv.glmnet(as.matrix(all.tr.x), 
+                         as.matrix(all.tr.y),
+                         lambda = seq(1, 20) * 1e-5,
+                         family = "binomial")
+bestlam.lasso = cv.out.lasso$lambda.min
+```
+the optimal value tuning parameter $\lambda$ is `r bestlam.lasso`.\
+
+The coefficients of lasso regression are: 
+```{r echo=FALSE}
+predict(cv.out.lasso, type="coefficients", s = bestlam.lasso)
+```
+The we find out the non-zero coefficients are "Men", "Poverty", "Professional", "Employed", "PrivateWork", "SelfEmployed", "FamilyWork", "minority", "Percent of adults with less than a high school diploma, 2015-19", "Percent of adults with a high school diploma only, 2015-19", "Percent of adults completing some college or associate's degree, 2015-19".\
+And the only zero coefficient feature is "Percent of adults with a bachelor's degree or higher, 2015-19".\
+
+```{r echo=FALSE}
+# Fit the lasso regression model
+model = glmnet(as.matrix(all.tr.x), as.matrix(all.tr.y),
+               lambda = bestlam.lasso, 
+               alpha=1,
+               family = "binomial")
+```
+
+```{r echo=FALSE}
+# Calculate the error rate
+all.te.x = select(all.te, -Poverty)
+all.te.y = as.matrix(as.numeric(all.te$Poverty))
+
+temp3 = predict(model, s=bestlam.lasso, newx=as.matrix(all.tr.x), type = "response")
+temp4 = predict(model, s=bestlam.lasso, newx=as.matrix(all.te.x), type = "response")
+
+records["lasso","train.error"] = 
+  calc_error_rate(as.factor(ifelse(temp3<=0.5, "0", "1")), all.tr$Poverty) 
+records["lasso","test.error"] = 
+  calc_error_rate(as.factor(ifelse(temp4<=0.5, "0", "1")), all.te$Poverty)
+```
+The penalized logistic regression does model selection and takes less predicting variables than the unpenalized logistic regression.\
+Higher education has a less significant negative influence on Poverty than the postive influence of the lower education has on Poverty.\
+
+<font size="4"> __18. ROC curve for the decision tree, logistic regression and LASSO logistic regression using predictions on the test data.__ </font>\
+(Red is Decision Tree, Blue is Logistic Regression, Pink is Lasso Regression)\
+```{r echo=FALSE}
+# Pruned Decision Tree
+pred.tree = prediction(predict(pt.cvtree.all, all.te)[,2], all.te$Poverty)
+perf.tree = performance(pred.tree, measure="tpr", x.measure="fpr") 
+
+# Logistic Regression
+pred.logit = prediction(predict(logit.all, all.te, type = "response"), all.te$Poverty)
+perf.logit = performance(pred.logit, measure="tpr", x.measure="fpr") 
+
+# Lasso
+pred.lasso = prediction(predict(model, s=bestlam.lasso, newx=as.matrix(all.te.x), type = "response"), all.te$Poverty)
+perf.lasso = performance(pred.lasso, measure="tpr", x.measure="fpr") 
+
+
+plot(perf.tree, col=2, lwd=3, main="ROC curve")
+plot(perf.logit, add = TRUE, col = "blue")
+plot(perf.lasso, add = TRUE, col = "pink")
+
+abline(0,1)
+```
+
+The current error rates for Decision Tree, Logistic Regression, and Lasso Regression:
+```{r echo=FALSE}
+records
+```
+According to the error rate records matrix, we can see that logistic regression with the lowest test error rate, has a better performance than the other two methods.\
+Decision Tree and Lasso have higher test error rate.\
+If we are more interested in predicting the Poverty using census data, logistic regression is a good method to use because in the model we fit previously, all the significant variables are from census data.\
+Decision Tree seems to be less appropriate for predicting Poverty in this situation, while Logistic and Lasso Regression turns out to provide a relatively better AUC.\
+\bigskip
+
+<font size="6"> __19. Other ways to Fit a Model__ </font>
+\bigskip
+
+<font size="4"> __(a) Fitting the model using Boosting__ </font>\
+We perform a boosting model and produce a relative influence plot and also outputs the relative influence statistics.
+```{r echo=FALSE}
+set.seed(123)
+boost.all = gbm(as.integer(Poverty)-1 ~., data=all.tr, distribution="bernoulli", n.trees=500)
+summary(boost.all)
+```
+From the above graph, we can see that "Employed" is is by far the most important variable. Comparing to the other variables, "Employed" has a relative relative influence to the response value "Poverty".\
+
+Then we would like to know how does this boosting model perform by calculating its error rate using training and testing data. 
+```{r echo=FALSE}
+# add new row to record matrix
+records = rbind(records, boosting = NA)
+```
+
+```{r echo=FALSE}
+# Calculate training error rate
+temp5 = predict(boost.all, n.trees=500, type = "response")
+records["boosting","train.error"] = 
+  calc_error_rate(as.factor(ifelse(temp5<=0.5, "0", "1")), all.tr$Poverty) 
+
+# Calculate test error rate
+temp6 = predict(boost.all, newdata = all.te, n.trees=500, type = "response")
+records["boosting","test.error"] = 
+  calc_error_rate(as.factor(ifelse(temp6<=0.5, "0", "1")), all.te$Poverty)
+```
+
+```{r echo=FALSE}
+records
+```
+\bigskip
+
+<font size="4"> __(b) Fitting the model using KNN__ </font>\
+We perform a boosting model and produce a relative influence plot and also outputs the relative influence statistics.\
+
+LOOCV to find the best K:
+```{r echo=FALSE}
+#all.tr
+#all.te
+
+YTrain = all.tr$Poverty
+XTrain = all.tr %>%
+  select(-c(Poverty)) %>% 
+  scale(center = TRUE, scale = TRUE)
+
+# YTest is the true labels for High on the test set, Xtest is the design matrix
+YTest = all.te$Poverty
+XTest = all.te %>% 
+  select(-c(Poverty)) %>% 
+  scale(center = TRUE, scale = TRUE)
+
+```
+
+```{r echo=FALSE}
+# Give possible number of nearest neighbours to be considered
+allK = 1:50
+# Set validation.error (a vector of length 50) to save validation errors in future
+# where validation.error[i] is the LOOCV validation when i-NN method is considered
+validation.error = rep(NA, 50)
+# Set random seed to make the results reproducible
+set.seed(123)
+# For each number in allK, use LOOCV to find a validation error
+for (i in allK){
+# Loop through different number of neighbors
+# Predict on the left-out validation set
+pred.Yval = knn.cv(train=XTrain, cl=YTrain, k=i)
+# Combine all validation errors
+validation.error[i] = mean(pred.Yval!=YTrain)
+}
+# Validation error for 1-NN, 2-NN, ..., 50-NN
+plot(allK, validation.error, type = "l", xlab = "k")
+
+```
+
+Then we choose the number of k to be:
+```{r echo=FALSE}
+numneighbor = max(allK[validation.error == min(validation.error)])
+numneighbor
+```
+
+```{r echo=FALSE}
+# add new row to record matrix
+records = rbind(records, knn = NA)
+```
+
+Confusion Matrix of Training Data:
+```{r echo=FALSE}
+set.seed(123)
+
+pred.YTrain = knn(train=XTrain, test=XTrain, cl=YTrain, k=numneighbor)
+# Get confusion matrix
+conf.train = table(predicted=pred.YTrain, true=YTrain)
+conf.train
+
+records["knn","train.error"] = 
+  calc_error_rate(pred.YTrain, YTrain)
+```
+
+Confusion Matrix of Test Data:
+```{r echo=FALSE}
+set.seed(123)
+
+pred.YTest = knn(train=XTrain, test=XTest, cl=YTrain, k=numneighbor)
+# Get confusion matrix
+conf.train = table(predicted=pred.YTest, true=YTest)
+conf.train
+
+records["knn","test.error"] = 
+  calc_error_rate(pred.YTest, YTest)
+```
+
+Now we can see the error rate for all the methods we used is:\
+```{r echo=FALSE}
+records
+```
+
+<font size="4"> __Comparison__ </font>\
+According to the new error rate record matrix, while logistic regression and boosting have the same test error rate, boosting seems to have a lower training error rate which may implies overfitting in the boosting model compare to the logistic regression model.\
+And interestingly, Decision tree and KNN have the same test error as well, and similarly, KNN seems to have a lower training error rate which may also implies overfitting in the KNN model compare to the decision Tree model.\
+Overall, Logistic Regression gives us a better performance on this data set.
+\bigskip
+
+<font size="6"> __20. Interesting Questions__ </font>
+\bigskip
+
+<font size="4"> __(a) First, we want to use Boosting model to predict the actual value of Poverty by County, and compare it with the Boosting model in the classification setting.__ </font>\
+```{r echo=FALSE}
+# Create a data frame again with the actural value of Poverty
+actual = census.clean %>%
+  left_join(education, by = c("State"="State", "County"="County")) %>% 
+  na.omit
+actual = actual %>%
+  select(c("State","Men","Poverty","Professional","Employed","PrivateWork","SelfEmployed","FamilyWork","minority","Percent of adults with less than a high school diploma, 2015-19","Percent of adults with a high school diploma only, 2015-19","Percent of adults completing some college or associate's degree, 2015-19","Percent of adults with a bachelor's degree or higher, 2015-19"))
+colnames(all) = make.names(colnames(all))
+```
+
+```{r echo=FALSE}
+# split the data into training and test sets
+set.seed(123) 
+n = nrow(all)
+idx.tr = sample.int(n, 0.8*n) 
+actual.tr = actual[idx.tr, -1]
+actual.te = actual[-idx.tr, -1]
+```
+
+```{r echo=FALSE}
+set.seed(123)
+boost.actual = gbm(Poverty ~., data=actual.tr, n.trees=500, distribution = "gaussian")
+summary(boost.actual)
+```
+
+The ROC curve for Logistic Boosting and Regression Boosting:\
+(Blue for regression, and red for logistic)\
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# mutate data
+actual.te = actual.te %>%
+  mutate(Poverty.binary = as.factor(ifelse(Poverty < 20, 0, 1)))
+
+# boost
+pred.boost = prediction(predict(boost.all, all.te, type = "response"), all.te$Poverty)
+perf.boost = performance(pred.boost, measure="tpr", x.measure="fpr")
+
+# regression boost
+pred.regression = prediction(predict(boost.actual, actual.te, type = "response"),
+                             actual.te$Poverty.binary)
+perf.regression = performance(pred.regression, measure="tpr", x.measure="fpr")
+
+# ROC
+plot(perf.boost, col=2, lwd=3, main="ROC curve")
+plot(perf.regression, add = TRUE, col = "blue")
+```
+
+```{r echo=FALSE}
+auc.boost = performance(pred.boost, "auc")@y.values
+auc.regression = performance(pred.regression, "auc")@y.values
+```
+The AUC for Logistic Boosting is `r auc.boost`.\
+The AUC for Regression Boosting is `r auc.regression`.\
+
+Apparently, we obtain a higher AUC value for the binary response variable than the actual response while using the same modeling method, which is quite different from our previous assumption of the error rate for the result. One of possible reason could be this problem is more of a identification problem, which may works better with Classification Algorithms.\
+Specifically for the current dataset we are using, we would prefer classification models because this dataset we use is basically identification problem where we want to predict if there is Poverty exists.\
+On the other hand, if we consider problems (not in the datasets we currently used) that predict house pricing might perform better using regression method, because house price prediction is a continuous data and the output variable is continuous nature or real value.\
+As a result, choosing Regression or Classification method is usually based on what kind of output variables we want to predict. 
+\bigskip
+
+After calculate all the training and test rate of the various models, we want to find out most related variables in order to improve our models and make a better prediction.\
+Since we did not use "TotalPop" as one of of predicting variables in fitting the models to predict "Poverty", we first want to find out how the Total Population related to the percentage of Poverty in different States. 
+\bigskip
+
+<font size="4"> __(b) Display the Poverty level of each State using the ggplot and compare it with the Population Level graph. Will more population result in a higher Poverty level?__ </font>\
+In this case, we will use the census.clean without make the Poverty column into level 0 and 1 (using the actual vales), then plot the graph.\
+The graph is shown below with comparison to the previous graph of Population: \
+```{r echo=FALSE}
+# Merge the data sets
+new.poverty = left_join(states, census.clean, by = "State")
+
+p2 = ggplot(data = new.poverty) + 
+  geom_polygon(aes(x = long, y = lat, fill = Poverty, group = group), color = "white") + 
+  theme_void() +
+   scale_fill_viridis(trans = "log", 
+                      name="Poverty Percentage", 
+                      guide = guide_legend( keyheight = unit(3, units = "mm"), 
+                                            keywidth=unit(12, units = "mm"), 
+                                            label.position = "bottom", 
+                                            title.position = 'top', nrow=1) ) +
+  theme(plot.title = 
+          element_text(size= 22, hjust=0.01, 
+                       color = "#4e4d47")) +
+  labs(title = "United States Poverty Level") +
+  coord_map()
+```
+
+```{r echo=FALSE}
+plot_grid(p1)
+```
+
+```{r echo=FALSE}
+plot_grid(p2)
+```
+\bigskip
+
+From the above graphs, we can see that there might exists some correlation between the Total Population of each states and percentage of Poverty. For example, California has a really high population and a relatively high poverty percentage. Also for South Dakota, it has a lower population level and a relatively low poverty percentage. As a result, we want to discuss if there exists correlation between Total Population and Poverty in each states using the bootstrapping method below.
+\bigskip
+
+<font size="4"> __(c) Then, we want to use Bootstrap Method to discuss the correlation between Poverty and three variables we are interested in.__ </font>\
+
+__1. Poverty & Total Population__\
+As we discussed in the previous section, we want to see if there is correlation between Poverty and Total Population.\
+```{r echo=FALSE}
+# Compute data set
+all1 <- census.clean %>%
+  left_join(education, by = c("State"="State", "County"="County")) %>% 
+  na.omit
+
+all1 = all1 %>%
+  select(c("Poverty","TotalPop"))
+
+fc1 <- function(data, i){
+	d2 <- data[i,]
+	return(cor(d2$Poverty, d2[,2]))
+}
+```
+
+```{r echo=FALSE}
+set.seed(123)
+bootcorr_pop <- boot(all1, fc1, R=500)
+bootcorr_pop
+#summary(bootcorr_pop)
+```
+
+The Characteristic of the Coefficient:\
+```{r echo=FALSE}
+range(bootcorr_pop$t)
+
+mean(bootcorr_pop$t)
+
+sd(bootcorr_pop$t)
+```
+
+Plot of Bootstrapping:\
+```{r echo=FALSE}
+plot(bootcorr_pop)
+```
+
+Confidence Interval of Coefficient:\
+```{r echo=FALSE}
+boot.ci(boot.out = bootcorr_pop, type = c("norm"))
+```
+Range of the correlation coefficient: [-0.12514 -0.03017]\
+Mean: -0.06938\
+Standard deviation: 0.01647\
+95% confidence interval: [-0.0962, -0.0316]\
+\bigskip
+
+As we can see, the range of the correlation coefficient is  from -0.13 to -0.03, and the 95% CI is from -0.096 to -0.032.\
+The statistics suggest that these two variables are from sightly to moderately negative correlated. From the plot we have in problem 8, and the plot in problem We thought poverty would have a more strong correlation with the total population, but it turns out not like that.\
+\bigskip
+
+__2. Poverty & Percent of adults with less than a high school diploma, 2015-19__\
+Next, we want to see how correlated are Poverty with "Percent of adults with less than a high school diploma, 2015-19", which was shown to have strong influence in boosting method above.\
+```{r echo=FALSE}
+all2 <- census.clean %>%
+  left_join(education, by = c("State"="State", "County"="County")) %>% 
+  na.omit
+
+all2 = all2 %>%
+  select(c("Poverty","Percent of adults with less than a high school diploma, 2015-19"))
+#view(all2)
+
+fc2 <- function(data, i){
+	d2 <- data[i,]
+	return(cor(d2$Poverty, d2[,2]))
+}
+
+set.seed(123)
+bootcorr_ed <- boot(all2, fc2, R=500)
+#summary(bootcorr_ed)
+```
+
+Characteristic of Coefficient:\
+```{r echo=FALSE}
+range(bootcorr_ed$t)
+
+mean(bootcorr_ed$t)
+
+sd(bootcorr_ed$t)
+```
+
+Plot of Bootstrapping:\
+```{r echo=FALSE}
+plot(bootcorr_ed)
+```
+
+Confidence Interval of Coefficient:\
+```{r echo=FALSE}
+boot.ci(boot.out = bootcorr_ed, type = c("norm"))
+```
+As we can see, the range of the correlation coefficient is  from 0.5606 to 0.6602, and the 95% CI is from 0.5817 to 0.6423.\
+The statistics suggest that these two variables have some strong positive correlation, which implies that a low education level has a positive influence on poverty.\
+\bigskip
+
+__3. Poverty & Employed__\
+Employed also shown to be a strong factor in boosting method, so we performed boostrap on it as well:\
+```{r echo=FALSE}
+all3 <- census.clean %>%
+  left_join(education, by = c("State"="State", "County"="County")) %>% 
+  na.omit
+
+all3 = all3 %>%
+  select(c("Poverty","Employed"))
+
+fc3 <- function(data, i){
+	d2 <- data[i,]
+	return(cor(d2$Poverty, d2$Employed))
+}
+
+set.seed(123)
+bootcorr_em <- boot(all3, fc3, R=500)
+#summary(bootcorr_em)
+```
+
+Characteristic of Coefficient:\
+```{r echo=FALSE}
+range(bootcorr_em$t)
+
+mean(bootcorr_em$t)
+
+sd(bootcorr_em$t)
+```
+
+Plot of Bootstrapping:\
+```{r echo=FALSE}
+plot(bootcorr_em)
+```
+
+Confidence Interval of Coefficient:\
+```{r echo=FALSE}
+boot.ci(boot.out = bootcorr_em, type = c("norm"))
+```
+As we can see, the range of the correlation coefficient is from -0.7348 to -0.6734, and the 95% CI is from -0.7293 to -0.6863.\
+The statistics suggest that these two variables have some strong negative correlation, which implies that employed groups are less possible to have poverty.
+\bigskip
+
+<font size="6"> __21. Interpret and discuss any overall insights gained in this analysis and possible explanations. __ </font>
+\bigskip
+
+__a.__ We use the Regression Boosting Model to predict the percentage of the Poverty and compare with the actual percentage of Poverty.\
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+actual.te = actual[-idx.tr, ]
+actual.te = actual.te %>%
+  mutate(prePoverty = predict(boost.actual, actual.te, type = "response"))
+plot.poverty = left_join(states, actual.te, by = "State")
+```
+
+```{r echo=FALSE}
+ggplot(data = plot.poverty) + 
+  geom_polygon(aes(x = long, y = lat, fill = Poverty, group = group), color = "white") + 
+  theme_void() +
+   scale_fill_viridis(trans = "log", 
+                      name="Poverty Percentage", 
+                      guide = guide_legend( keyheight = unit(3, units = "mm"), 
+                                            keywidth=unit(12, units = "mm"), 
+                                            label.position = "bottom", 
+                                            title.position = 'top', nrow=1) ) +
+  theme(plot.title = 
+          element_text(size= 22, hjust=0.01, 
+                       color = "#4e4d47")) +
+  labs(title = "United States Actual Poverty Level") +
+  coord_map()
+```
+
+
+```{r echo=FALSE}
+ggplot(data = plot.poverty) + 
+  geom_polygon(aes(x = long, y = lat, fill = prePoverty, group = group), color = "white") + 
+  theme_void() +
+   scale_fill_viridis(trans = "log", 
+                      name="Poverty Percentage", 
+                      guide = guide_legend( keyheight = unit(3, units = "mm"), 
+                                            keywidth=unit(12, units = "mm"), 
+                                            label.position = "bottom", 
+                                            title.position = 'top', nrow=1) ) +
+  theme(plot.title = 
+          element_text(size= 22, hjust=0.01, 
+                       color = "#4e4d47")) +
+  labs(title = "United States Predicted Poverty Level") +
+  coord_map()
+```
+\bigskip
+
+As we can see in the above graphs, California has a relatively low predicted Poverty percentage compare to the actual high percentage in Poverty, which means the prediction using regression might cause some false prediction. One of possible reason could be since this problem is more of a identification problem, so it might not work as good as we assumed for boosting method.\
+
+__b.__ One result that we did not expected was the influence of higher education level has a lighter influence on poverty than the lower education level. Before reading the result of LASSO regression, the only thing we knew was LASSO can help to reduce coefficient amount, but now we learned that it could also show some relative significance between coefficients with similar measure.\
+
+__c.__ Before we use bootstrap to find the correlation between Poverty and Total Population of each States, we thought a larger population might result in a higher percentage of Poverty because more people means higher possibility of identify as "Yes" in Poverty. However, after we use bootstrap to calculate the confidence interval of the coefficients, we realize that Total Population has a really low correlation compare to the other variables, such as "Unemployed" and "Percent of adults with less than a high school diploma, 2015-19" that we are interested in.\
+
+__d.__ We might be able to compare some other aspects that have relations with poverty from some industry data. In this data set, we complied several variables from census and education, which mainly focused on the lifestyle and identification of the population (race, transportation, jobs, gender, and education background). In addition to that, for example, the population in the US who are in the Medicaid insurance group, which is a public program designed for the low-income population. The industry data tends to have a cleaner structure and has a more direct relation with the financial situation. Other industry data examples could be government financial aid and support programs.
+
+
+
+
+
